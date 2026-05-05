@@ -1,10 +1,15 @@
 obj-m += vpm_skeleton.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
+
+SRC_DIR := $(CURDIR)
+BUILD_DIR := $(abspath $(SRC_DIR)/../../build/vpm_skeleton)
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	@mkdir -p $(BUILD_DIR)
+	$(MAKE) -C $(KDIR) M=$(SRC_DIR) MO=$(BUILD_DIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@mkdir -p $(BUILD_DIR)
+	$(MAKE) -C $(KDIR) M=$(SRC_DIR) MO=$(BUILD_DIR) clean
+	rm -rf $(BUILD_DIR)
