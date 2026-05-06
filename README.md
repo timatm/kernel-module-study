@@ -18,6 +18,41 @@ The first milestone verifies the basic Linux kernel module workflow:
 - Inspect kernel logs with `dmesg`
 - Unload the module with `rmmod`
 
+## Milestone 1: Mock Register Map
+
+M1 adds a fake hardware register map to the kernel module.  
+The goal is to model a simple embedded sensor chip before implementing a real bus driver.
+
+The mock chip includes:
+
+- WHOAMI register
+- silicon revision register
+- control register
+- output data rate register
+- status register
+- power state register
+
+This allows the module to validate a hardware-like identity value and initialize fake chip state during module load.
+
+## Milestone 2: DebugFS Register Interface
+
+M2 exposes the mock VPM sensor registers to user space through debugfs.
+
+This is intentionally implemented as a debug and validation interface rather than a stable userspace ABI. The goal is to make the fake hardware state observable and controllable before adding a formal driver subsystem such as IIO.
+
+### DebugFS layout
+
+```text
+/sys/kernel/debug/vpm_skeleton/
+├── whoami
+├── revision
+├── ctrl
+├── odr_hz
+├── status
+├── pm_state
+└── registers
+```
+
 ## Build
 
 ```bash

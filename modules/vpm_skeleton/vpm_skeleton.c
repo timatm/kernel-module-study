@@ -16,6 +16,13 @@
 #include <linux/moduleparam.h>
 #include <linux/types.h>
 
+#include <linux/debugfs.h>
+#include <linux/fs.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/uaccess.h>
+
 #include "vpm_regs.h"
 
 static unsigned int mock_revision = 1;
@@ -33,8 +40,9 @@ MODULE_PARM_DESC(low_power_default, "Start device in low-power mode");
 
 struct vpm_mock_chip {
     u8 regs[VPM_REG_MAX];
+    struct mutex lock;
+    struct dentry *debugfs_dir;
 };
-
 static struct vpm_mock_chip vpm_chip;
 
 static int vpm_mock_read_reg(struct vpm_mock_chip *chip, u8 reg, u8 *val)
@@ -45,9 +53,32 @@ static int vpm_mock_read_reg(struct vpm_mock_chip *chip, u8 reg, u8 *val)
     if (reg >= VPM_REG_MAX)
         return -EINVAL;
 
+    mutex_lock(&chip->lock);
     *val = chip->regs[reg];
+    mutex_unlock(&chip->lock);
 
     return 0;
+}
+
+static ssize_t vpm_debugfs_read_u8_reg(struct file *file,
+                                       char __user *user_buf,
+                                       size_t count,
+                                       loff_t *ppos,
+                                       u8 reg)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char buf[32];
+    u8 val;
+    int ret;
+    int len;
+
+    ret = vpm_mock_read_reg(chip, reg, &val);
+    if (ret)
+        return ret;
+
+    len = scnprintf(buf, sizeof(buf), "0x%02x\n", val);
+
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
 
 static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
@@ -65,7 +96,9 @@ static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
     if (reg == VPM_REG_WHOAMI)
         return -EINVAL;
 
+    mutex_lock(&chip->lock);
     chip->regs[reg] = val;
+    mutex_unlock(&chip->lock);
 
     return 0;
 }
@@ -104,6 +137,241 @@ static int vpm_mock_validate_chip(struct vpm_mock_chip *chip)
     return 0;
 }
 
+static ssize_t vpm_whoami_read(struct file *file,
+                               char __user *user_buf,
+                               size_t count,
+                               loff_t *ppos)
+{
+    return vpm_debugfs_read_u8_reg(file, user_buf, count, ppos,
+                                   VPM_REG_WHOAMI);
+}
+
+static ssize_t vpm_revision_read(struct file *file,
+                                 char __user *user_buf,
+                                 size_t count,
+                                 loff_t *ppos)
+{
+    return vpm_debugfs_read_u8_reg(file, user_buf, count, ppos,
+                                   VPM_REG_REVISION);
+}
+
+static ssize_t vpm_ctrl_read(struct file *file,
+                             char __user *user_buf,
+                             size_t count,
+                             loff_t *ppos)
+{
+    return vpm_debugfs_read_u8_reg(file, user_buf, count, ppos,
+                                   VPM_REG_CTRL);
+}
+
+static ssize_t vpm_status_read(struct file *file,
+                               char __user *user_buf,
+                               size_t count,
+                               loff_t *ppos)
+{
+    return vpm_debugfs_read_u8_reg(file, user_buf, count, ppos,
+                                   VPM_REG_STATUS);
+}
+
+static ssize_t vpm_pm_state_read(struct file *file,
+                                 char __user *user_buf,
+                                 size_t count,
+                                 loff_t *ppos)
+{
+    return vpm_debugfs_read_u8_reg(file, user_buf, count, ppos,
+                                   VPM_REG_PM_STATE);
+}
+
+static ssize_t vpm_odr_read(struct file *file,
+                            char __user *user_buf,
+                            size_t count,
+                            loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char buf[32];
+    u8 val;
+    int ret;
+    int len;
+
+    ret = vpm_mock_read_reg(chip, VPM_REG_ODR, &val);
+    if (ret)
+        return ret;
+
+    len = scnprintf(buf, sizeof(buf), "%u\n", val);
+
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static ssize_t vpm_odr_write(struct file *file,
+                             const char __user *user_buf,
+                             size_t count,
+                             loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char buf[32];
+    unsigned int val;
+    size_t len;
+    int ret;
+
+    len = min(count, sizeof(buf) - 1);
+
+    if (copy_from_user(buf, user_buf, len))
+        return -EFAULT;
+
+    buf[len] = '\0';
+
+    ret = kstrtouint(buf, 0, &val);
+    if (ret)
+        return ret;
+
+    if (val > 255)
+        return -EINVAL;
+
+    ret = vpm_mock_write_reg(chip, VPM_REG_ODR, val);
+    if (ret)
+        return ret;
+
+    pr_info("vpm_skeleton: ODR updated to %u Hz\n", val);
+
+    return count;
+}
+
+static const struct file_operations vpm_whoami_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_whoami_read,
+    .llseek = default_llseek,
+};
+
+static const struct file_operations vpm_revision_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_revision_read,
+    .llseek = default_llseek,
+};
+
+static const struct file_operations vpm_ctrl_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_ctrl_read,
+    .llseek = default_llseek,
+};
+
+static const struct file_operations vpm_status_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_status_read,
+    .llseek = default_llseek,
+};
+
+static const struct file_operations vpm_pm_state_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_pm_state_read,
+    .llseek = default_llseek,
+};
+
+static const struct file_operations vpm_odr_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_odr_read,
+    .write = vpm_odr_write,
+    .llseek = default_llseek,
+};
+
+static ssize_t vpm_registers_read(struct file *file,
+                                  char __user *user_buf,
+                                  size_t count,
+                                  loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char *buf;
+    int len = 0;
+    ssize_t ret;
+    u8 whoami, revision, ctrl, odr, status, pm_state;
+
+    buf = kzalloc(512, GFP_KERNEL);
+    if (!buf)
+        return -ENOMEM;
+
+    vpm_mock_read_reg(chip, VPM_REG_WHOAMI, &whoami);
+    vpm_mock_read_reg(chip, VPM_REG_REVISION, &revision);
+    vpm_mock_read_reg(chip, VPM_REG_CTRL, &ctrl);
+    vpm_mock_read_reg(chip, VPM_REG_ODR, &odr);
+    vpm_mock_read_reg(chip, VPM_REG_STATUS, &status);
+    vpm_mock_read_reg(chip, VPM_REG_PM_STATE, &pm_state);
+
+    len += scnprintf(buf + len, 512 - len, "VPM mock register dump\n");
+    len += scnprintf(buf + len, 512 - len, "----------------------\n");
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x WHOAMI   : 0x%02x\n",
+                     VPM_REG_WHOAMI, whoami);
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x REVISION : 0x%02x\n",
+                     VPM_REG_REVISION, revision);
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x CTRL     : 0x%02x\n",
+                     VPM_REG_CTRL, ctrl);
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x ODR      : %u Hz\n",
+                     VPM_REG_ODR, odr);
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x STATUS   : 0x%02x\n",
+                     VPM_REG_STATUS, status);
+    len += scnprintf(buf + len, 512 - len,
+                     "0x%02x PM_STATE : 0x%02x\n",
+                     VPM_REG_PM_STATE, pm_state);
+
+    ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
+
+    kfree(buf);
+
+    return ret;
+}
+
+static const struct file_operations vpm_registers_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_registers_read,
+    .llseek = default_llseek,
+};
+
+static int vpm_debugfs_init(struct vpm_mock_chip *chip)
+{
+    chip->debugfs_dir = debugfs_create_dir("vpm_skeleton", NULL);
+    if (IS_ERR_OR_NULL(chip->debugfs_dir))
+        return -ENOMEM;
+
+    debugfs_create_file("whoami", 0444, chip->debugfs_dir,
+                        chip, &vpm_whoami_fops);
+
+    debugfs_create_file("revision", 0444, chip->debugfs_dir,
+                        chip, &vpm_revision_fops);
+
+    debugfs_create_file("ctrl", 0444, chip->debugfs_dir,
+                        chip, &vpm_ctrl_fops);
+
+    debugfs_create_file("odr_hz", 0644, chip->debugfs_dir,
+                        chip, &vpm_odr_fops);
+
+    debugfs_create_file("status", 0444, chip->debugfs_dir,
+                        chip, &vpm_status_fops);
+
+    debugfs_create_file("pm_state", 0444, chip->debugfs_dir,
+                        chip, &vpm_pm_state_fops);
+
+    debugfs_create_file("registers", 0444, chip->debugfs_dir,
+                        chip, &vpm_registers_fops);
+
+    return 0;
+}
+
+static void vpm_debugfs_exit(struct vpm_mock_chip *chip)
+{
+    debugfs_remove_recursive(chip->debugfs_dir);
+    chip->debugfs_dir = NULL;
+}
+
 static void vpm_mock_dump_regs(struct vpm_mock_chip *chip)
 {
     u8 whoami;
@@ -135,6 +403,8 @@ static int __init vpm_skeleton_init(void)
     pr_info("vpm_skeleton: init\n");
     pr_info("vpm_skeleton: initializing mock register map\n");
 
+    mutex_init(&vpm_chip.lock);
+
     vpm_mock_init_regs(&vpm_chip);
     vpm_mock_dump_regs(&vpm_chip);
 
@@ -144,6 +414,13 @@ static int __init vpm_skeleton_init(void)
         return ret;
     }
 
+    ret = vpm_debugfs_init(&vpm_chip);
+    if (ret) {
+        pr_err("vpm_skeleton: failed to initialize debugfs: %d\n", ret);
+        return ret;
+    }
+
+    pr_info("vpm_skeleton: debugfs created at /sys/kernel/debug/vpm_skeleton\n");
     pr_info("vpm_skeleton: mock chip initialized successfully\n");
 
     return 0;
@@ -151,6 +428,7 @@ static int __init vpm_skeleton_init(void)
 
 static void __exit vpm_skeleton_exit(void)
 {
+    vpm_debugfs_exit(&vpm_chip);
     pr_info("vpm_skeleton: exit\n");
 }
 
