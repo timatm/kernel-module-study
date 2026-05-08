@@ -27,3 +27,4 @@ Module.symvers
 *~
 
 ./build
+**/build
