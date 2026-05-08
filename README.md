@@ -40,6 +40,18 @@ M2 exposes the mock VPM sensor registers to user space through debugfs.
 
 This is intentionally implemented as a debug and validation interface rather than a stable userspace ABI. The goal is to make the fake hardware state observable and controllable before adding a formal driver subsystem such as IIO.
 
+## Milestone 3: VPM controller
+
+M3 implements the VPM controller user CLI, `vpmctl`, to control and inspect the VPM sensor driver from user space.
+
+Supported commands:
+
+- `vpmctl info` shows a human-readable device summary
+- `vpmctl read <register>` reads a single debugfs register
+- `vpmctl set-odr <hz>` updates the output data rate
+- `vpmctl dump-regs` dumps all virtual register values
+- `vpmctl help` shows usage information
+
 ### DebugFS layout
 
 ```text
