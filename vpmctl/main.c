@@ -6,15 +6,32 @@
 #include <string.h>
 
 
+static int fault_name_to_value(const char *name, unsigned int *value)
+{
+    if (!name || !value)
+        return -1;
+
+    if (strcmp(name, "invalid_status") == 0) {
+        *value = VPM_FAULT_INVALID_STATUS_VALUE;
+        return 0;
+    }
+
+    if (strcmp(name, "device_busy") == 0) {
+        *value = VPM_FAULT_DEVICE_BUSY_VALUE;
+        return 0;
+    }
+
+    return -1;
+}
+
 int parse_command(int argc, char *argv[], Node *n)
 {
     if (!argv || !n) {
         return 1;
     }
 
-    if (argc < 1 || argc > 2) {
-        return 1;
-    }
+    if (argc < 1 || argc > 3)
+        return -1;
 
     n->parameter = NULL;
 
@@ -38,6 +55,22 @@ int parse_command(int argc, char *argv[], Node *n)
         if(argc != 1) return 1;
         n->opt = OP_DUMP_REGS;
     }
+    else if (strcmp(argv[0], "fault") == 0) {
+        n->opt = OP_FAULT;
+        if (argc == 2 && strcmp(argv[1], "status") == 0) {
+            n->subcmd = argv[1];
+        }
+        else if (argc == 2 && strcmp(argv[1], "clear") == 0) {
+            n->subcmd = argv[1];
+        }
+        else if (argc == 3 && strcmp(argv[1], "set") == 0) {
+            n->subcmd = argv[1];
+            n->parameter = argv[2];
+        }
+        else {
+            return -1;
+        }
+    }
     else {
         printf("User command operation is not defined\n");
         return 1;
@@ -55,9 +88,12 @@ int op_help(){
     printf("User can use following operation:\n");
     printf("\t ./vpmctl help\n");
     printf("\t ./vpmctl info\n");
-    printf("\t ./vpmctl read\n");
-    printf("\t ./vpmctl set-odr\n");
+    printf("\t ./vpmctl read <whoami|revision|ctrl|odr_hz|status|pm_state>\n");
+    printf("\t ./vpmctl set-odr <0-255>\n");
     printf("\t ./vpmctl dump-regs\n");
+    printf("\t ./vpmctl fault status\n");
+    printf("\t ./vpmctl fault set <invalid_status|device_busy>\n");
+    printf("\t ./vpmctl fault clear\n");
     return 0;
 }
 
@@ -279,6 +315,138 @@ int op_dump_regs(void)
     return print_debugfs_raw_file("registers");
 }
 
+
+static int read_fault_value(unsigned int *value)
+{
+    char path[256];
+    char buf[64];
+    char *end = NULL;
+    FILE *fp;
+    int ret;
+
+    if (!value)
+        return -1;
+
+    ret = snprintf(path, sizeof(path), "%s/%s", DEBUG_DIR, "fault_inject");
+    if (ret < 0 || (size_t)ret >= sizeof(path)) {
+        fprintf(stderr, "fault: path too long\n");
+        return -1;
+    }
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        fprintf(stderr, "fault: fopen %s failed: %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+
+    if (!fgets(buf, sizeof(buf), fp)) {
+        fprintf(stderr, "fault: failed to read %s\n", path);
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+
+    errno = 0;
+    *value = strtoul(buf, &end, 0);
+
+    if (errno != 0 || end == buf) {
+        fprintf(stderr, "fault: invalid fault value: %s\n", buf);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int write_fault_value(unsigned int value)
+{
+    char path[256];
+    FILE *fp;
+    int ret;
+
+    ret = snprintf(path, sizeof(path), "%s/%s", DEBUG_DIR, "fault_inject");
+    if (ret < 0 || (size_t)ret >= sizeof(path)) {
+        fprintf(stderr, "fault: path too long\n");
+        return -1;
+    }
+
+    fp = fopen(path, "w");
+    if (!fp) {
+        fprintf(stderr, "fault: fopen %s failed: %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+
+    if (fprintf(fp, "0x%02x\n", value) < 0) {
+        fprintf(stderr, "fault: write failed: %s\n", strerror(errno));
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static void print_fault_status(unsigned int value)
+{
+    printf("fault_inject: 0x%02x\n", value);
+
+    printf("active faults:");
+
+    if (value == 0) {
+        printf(" none\n");
+        return;
+    }
+
+    if (value & VPM_FAULT_INVALID_STATUS_VALUE)
+        printf(" invalid_status");
+
+    if (value & VPM_FAULT_DEVICE_BUSY_VALUE)
+        printf(" device_busy");
+
+    printf("\n");
+}
+
+int op_fault(const char *subcmd, const char *parameter)
+{
+    unsigned int value;
+
+    if (!subcmd) {
+        fprintf(stderr, "fault: missing subcommand\n");
+        return -1;
+    }
+
+    if (strcmp(subcmd, "status") == 0) {
+        if (read_fault_value(&value) != 0)
+            return -1;
+
+        print_fault_status(value);
+        return 0;
+    }
+
+    if (strcmp(subcmd, "clear") == 0) {
+        return write_fault_value(0x00);
+    }
+
+    if (strcmp(subcmd, "set") == 0) {
+        if (!parameter) {
+            fprintf(stderr, "fault: missing fault mode\n");
+            return -1;
+        }
+
+        if (fault_name_to_value(parameter, &value) != 0) {
+            fprintf(stderr, "fault: unknown fault mode: %s\n", parameter);
+            fprintf(stderr, "valid modes: invalid_status device_busy\n");
+            return -1;
+        }
+
+        return write_fault_value(value);
+    }
+
+    fprintf(stderr, "fault: unknown subcommand: %s\n", subcmd);
+    return -1;
+}
 int main(int argc,char *argv[]){
     int err = 0;
     Node n;
@@ -303,6 +471,9 @@ int main(int argc,char *argv[]){
             break;
         case OP_DUMP_REGS:
             err = op_dump_regs();
+            break;
+        case OP_FAULT:
+            err = op_fault(n.subcmd, n.parameter);
             break;
         default:
             fprintf(stderr, "unknown operation\n");

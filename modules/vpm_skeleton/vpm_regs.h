@@ -28,11 +28,23 @@
 #define VPM_REG_ACCEL_Z_H       0x17
 
 #define VPM_REG_PM_STATE        0x30
+
+/*
+ * Mock-only validation register.
+ *
+ * This register does not represent a production hardware register.
+ * It is used by the virtual hardware model to inject deterministic
+ * error conditions for pre-silicon driver validation.
+ */
 #define VPM_REG_FAULT_INJECT    0x7e
 
 #define VPM_REG_MAX             0x80
 
 #define VPM_WHOAMI_VALUE        0xa5
+
+/* FAULT_INJECT register bits */
+#define VPM_FAULT_INVALID_STATUS    BIT(0)
+#define VPM_FAULT_DEVICE_BUSY       BIT(1)
 
 /* CTRL register bits */
 #define VPM_CTRL_ENABLE         BIT(0)
@@ -52,5 +64,8 @@
 #define VPM_PM_IDLE             1
 #define VPM_PM_RUNTIME_SUSPEND  2
 #define VPM_PM_SYSTEM_SUSPEND   3
+
+#define VPM_FAULT_INVALID_STATUS    BIT(0)
+#define VPM_FAULT_DEVICE_BUSY       BIT(1)
 
 #endif /* _VPM_REGS_H_ */

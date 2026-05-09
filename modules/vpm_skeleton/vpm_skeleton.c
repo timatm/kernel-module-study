@@ -81,6 +81,27 @@ static ssize_t vpm_debugfs_read_u8_reg(struct file *file,
     return simple_read_from_buffer(user_buf, count, ppos, buf, len);
 }
 
+static bool vpm_mock_fault_enabled(struct vpm_mock_chip *chip, u8 fault)
+{
+    bool enabled;
+
+    mutex_lock(&chip->lock);
+    enabled = chip->regs[VPM_REG_FAULT_INJECT] & fault;
+    mutex_unlock(&chip->lock);
+
+    return enabled;
+}
+
+static void vpm_mock_apply_faults_locked(struct vpm_mock_chip *chip)
+{
+    u8 fault = chip->regs[VPM_REG_FAULT_INJECT];
+
+    if (fault & VPM_FAULT_INVALID_STATUS)
+        chip->regs[VPM_REG_STATUS] |= VPM_STATUS_FAULT;
+    else
+        chip->regs[VPM_REG_STATUS] &= ~VPM_STATUS_FAULT;
+}
+
 static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
 {
     if (!chip)
@@ -89,19 +110,19 @@ static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
     if (reg >= VPM_REG_MAX)
         return -EINVAL;
 
-    /*
-     * WHOAMI is read-only in real hardware.
-     * Keep the same behavior in the mock model.
-     */
     if (reg == VPM_REG_WHOAMI)
         return -EINVAL;
 
     mutex_lock(&chip->lock);
     chip->regs[reg] = val;
+    if (reg == VPM_REG_FAULT_INJECT)
+        vpm_mock_apply_faults_locked(chip);
     mutex_unlock(&chip->lock);
 
     return 0;
 }
+
+
 
 static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
 {
@@ -113,6 +134,7 @@ static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
     chip->regs[VPM_REG_REVISION] = mock_revision & 0xff;
     chip->regs[VPM_REG_ODR] = default_odr_hz & 0xff;
     chip->regs[VPM_REG_PM_STATE] = VPM_PM_ACTIVE;
+    chip->regs[VPM_REG_FAULT_INJECT] = 0x00;
 
     if (low_power_default)
         ctrl |= VPM_CTRL_LOW_POWER;
@@ -227,6 +249,11 @@ static ssize_t vpm_odr_write(struct file *file,
     if (val > 255)
         return -EINVAL;
 
+    if (vpm_mock_fault_enabled(chip, VPM_FAULT_DEVICE_BUSY)) {
+        pr_info("vpm_skeleton: reject ODR update because device is busy\n");
+        return -EBUSY;
+    }
+
     ret = vpm_mock_write_reg(chip, VPM_REG_ODR, val);
     if (ret)
         return ret;
@@ -235,6 +262,72 @@ static ssize_t vpm_odr_write(struct file *file,
 
     return count;
 }
+
+static ssize_t vpm_fault_read(struct file *file,
+                              char __user *user_buf,
+                              size_t count,
+                              loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = (struct vpm_mock_chip *)file->private_data;
+    char buf[32];
+    u8 val;
+    int ret;
+    int len;
+
+    ret = vpm_mock_read_reg(chip,VPM_REG_FAULT_INJECT, &val);
+    if (ret)
+        return ret;
+
+    len = scnprintf(buf, sizeof(buf), "0x%02x\n", val);
+
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+
+}
+
+static ssize_t vpm_fault_write(struct file *file,
+                               const char __user *user_buf,
+                               size_t count,
+                               loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char buf[32];
+    unsigned int val;
+    size_t len;
+    int ret;
+
+    len = min(count, sizeof(buf) - 1);
+
+    if (copy_from_user(buf, user_buf, len))
+        return -EFAULT;
+
+    buf[len] = '\0';
+
+    ret = kstrtouint(buf, 0, &val);
+    if (ret)
+        return ret;
+
+    if (val > 0xff)
+        return -EINVAL;
+
+    if (val & ~(VPM_FAULT_INVALID_STATUS | VPM_FAULT_DEVICE_BUSY))
+        return -EINVAL;
+
+    ret = vpm_mock_write_reg(chip, VPM_REG_FAULT_INJECT, val);
+    if (ret)
+        return ret;
+
+    pr_info("vpm_skeleton: fault_inject updated to 0x%02x\n", val);
+
+    return count;
+}
+
+static const struct file_operations vpm_fault_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_fault_read,
+    .write = vpm_fault_write,
+    .llseek = default_llseek,
+};
 
 static const struct file_operations vpm_whoami_fops = {
     .owner = THIS_MODULE,
@@ -288,7 +381,7 @@ static ssize_t vpm_registers_read(struct file *file,
     char *buf;
     int len = 0;
     ssize_t ret;
-    u8 whoami, revision, ctrl, odr, status, pm_state;
+    u8 whoami, revision, ctrl, odr, status, pm_state, fault;
 
     buf = kzalloc(512, GFP_KERNEL);
     if (!buf)
@@ -300,6 +393,7 @@ static ssize_t vpm_registers_read(struct file *file,
     vpm_mock_read_reg(chip, VPM_REG_ODR, &odr);
     vpm_mock_read_reg(chip, VPM_REG_STATUS, &status);
     vpm_mock_read_reg(chip, VPM_REG_PM_STATE, &pm_state);
+    vpm_mock_read_reg(chip, VPM_REG_FAULT_INJECT, &fault);
 
     len += scnprintf(buf + len, 512 - len, "VPM mock register dump\n");
     len += scnprintf(buf + len, 512 - len, "----------------------\n");
@@ -321,7 +415,9 @@ static ssize_t vpm_registers_read(struct file *file,
     len += scnprintf(buf + len, 512 - len,
                      "0x%02x PM_STATE : 0x%02x\n",
                      VPM_REG_PM_STATE, pm_state);
-
+    len += scnprintf(buf + len, 512 - len,
+                 "0x%02x FAULT_INJECT : 0x%02x\n",
+                 VPM_REG_FAULT_INJECT, fault);
     ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
 
     kfree(buf);
@@ -362,7 +458,9 @@ static int vpm_debugfs_init(struct vpm_mock_chip *chip)
 
     debugfs_create_file("registers", 0444, chip->debugfs_dir,
                         chip, &vpm_registers_fops);
-
+    
+    debugfs_create_file("fault_inject", 0644, chip->debugfs_dir,
+                    chip, &vpm_fault_fops);
     return 0;
 }
 
