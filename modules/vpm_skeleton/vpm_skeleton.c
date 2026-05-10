@@ -9,19 +9,21 @@
  *   - Validate WHOAMI like a real hardware driver
  */
 
+#include <linux/debugfs.h>
 #include <linux/errno.h>
+#include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/types.h>
-
-#include <linux/debugfs.h>
-#include <linux/fs.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/workqueue.h>
 
 #include "vpm_regs.h"
 
@@ -40,10 +42,106 @@ MODULE_PARM_DESC(low_power_default, "Start device in low-power mode");
 
 struct vpm_mock_chip {
     u8 regs[VPM_REG_MAX];
+
     struct mutex lock;
     struct dentry *debugfs_dir;
+
+    struct delayed_work data_work;
+    bool data_work_enabled;
+
+    u32 sample_counter;
+
+    s16 temp_raw;
+    s16 accel_x_raw;
+    s16 accel_y_raw;
+    s16 accel_z_raw;
 };
 static struct vpm_mock_chip vpm_chip;
+
+static unsigned int vpm_mock_get_period_ms_locked(struct vpm_mock_chip *chip)
+{
+    u8 odr;
+
+    odr = chip->regs[VPM_REG_ODR];
+
+    if (odr == 0)
+        return 0;
+
+    return max(1U, 1000U / odr);
+}
+
+static void vpm_mock_write_s16_regs_locked(struct vpm_mock_chip *chip,
+                                           u8 reg_l,
+                                           s16 value)
+{
+    chip->regs[reg_l] = value & 0xff;
+    chip->regs[reg_l + 1] = (value >> 8) & 0xff;
+}
+
+
+static void vpm_mock_update_sample_locked(struct vpm_mock_chip *chip)
+{
+    chip->sample_counter++;
+
+    chip->temp_raw = 25000 + (chip->sample_counter % 100);
+    chip->accel_x_raw = chip->sample_counter % 64;
+    chip->accel_y_raw = -(chip->sample_counter % 32);
+    chip->accel_z_raw = 1024;
+
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_TEMP_L,
+                                   chip->temp_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_X_L,
+                                   chip->accel_x_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Y_L,
+                                   chip->accel_y_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Z_L,
+                                   chip->accel_z_raw);
+
+    chip->regs[VPM_REG_STATUS] |= VPM_STATUS_DATA_READY;
+}
+
+static void vpm_data_workfn(struct work_struct *work)
+{
+    struct delayed_work *dwork;
+    struct vpm_mock_chip *chip;
+    unsigned int period_ms;
+
+    dwork = to_delayed_work(work);
+    chip = container_of(dwork, struct vpm_mock_chip, data_work);
+
+    mutex_lock(&chip->lock);
+
+    period_ms = vpm_mock_get_period_ms_locked(chip);
+    if (period_ms == 0) {
+        chip->data_work_enabled = false;
+        mutex_unlock(&chip->lock);
+        return;
+    }
+
+    chip->data_work_enabled = true;
+    vpm_mock_update_sample_locked(chip);
+
+    mutex_unlock(&chip->lock);
+
+    schedule_delayed_work(&chip->data_work,
+                          msecs_to_jiffies(period_ms));
+}
+
+static void vpm_mock_restart_data_work(struct vpm_mock_chip *chip)
+{
+    unsigned int period_ms;
+
+    cancel_delayed_work_sync(&chip->data_work);
+
+    mutex_lock(&chip->lock);
+    period_ms = vpm_mock_get_period_ms_locked(chip);
+    chip->data_work_enabled = period_ms != 0;
+    mutex_unlock(&chip->lock);
+
+    if (period_ms != 0)
+        schedule_delayed_work(&chip->data_work,
+                              msecs_to_jiffies(period_ms));
+}
 
 static int vpm_mock_read_reg(struct vpm_mock_chip *chip, u8 reg, u8 *val)
 {
@@ -124,6 +222,11 @@ static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
 
 
 
+
+
+
+
+
 static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
 {
     u8 ctrl = VPM_CTRL_ENABLE;
@@ -135,6 +238,22 @@ static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
     chip->regs[VPM_REG_ODR] = default_odr_hz & 0xff;
     chip->regs[VPM_REG_PM_STATE] = VPM_PM_ACTIVE;
     chip->regs[VPM_REG_FAULT_INJECT] = 0x00;
+
+    chip->sample_counter = 0;
+    chip->temp_raw = 25000;
+    chip->accel_x_raw = 0;
+    chip->accel_y_raw = 0;
+    chip->accel_z_raw = 1024;
+    chip->data_work_enabled = false;
+
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_TEMP_L,
+                                   chip->temp_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_X_L,
+                                   chip->accel_x_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Y_L,
+                                   chip->accel_y_raw);
+    vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Z_L,
+                                   chip->accel_z_raw);
 
     if (low_power_default)
         ctrl |= VPM_CTRL_LOW_POWER;
@@ -255,12 +374,13 @@ static ssize_t vpm_odr_write(struct file *file,
     }
 
     ret = vpm_mock_write_reg(chip, VPM_REG_ODR, val);
-    if (ret)
-        return ret;
+	if (ret)
+		return ret;
 
-    pr_info("vpm_skeleton: ODR updated to %u Hz\n", val);
+	vpm_mock_restart_data_work(chip);
 
-    return count;
+	pr_info("vpm_skeleton: ODR updated to %u Hz\n", val);
+	return count;
 }
 
 static ssize_t vpm_fault_read(struct file *file,
@@ -320,6 +440,46 @@ static ssize_t vpm_fault_write(struct file *file,
 
     return count;
 }
+static ssize_t vpm_sample_read(struct file *file,
+                               char __user *user_buf,
+                               size_t count,
+                               loff_t *ppos)
+{
+    struct vpm_mock_chip *chip = file->private_data;
+    char buf[256];
+    int len;
+
+    mutex_lock(&chip->lock);
+
+    len = scnprintf(buf, sizeof(buf),
+                    "sample_counter: %u\n"
+                    "temp_raw      : %d\n"
+                    "accel_x_raw   : %d\n"
+                    "accel_y_raw   : %d\n"
+                    "accel_z_raw   : %d\n"
+                    "status        : 0x%02x\n"
+                    "odr_hz        : %u\n"
+                    "data_work     : %s\n",
+                    chip->sample_counter,
+                    chip->temp_raw,
+                    chip->accel_x_raw,
+                    chip->accel_y_raw,
+                    chip->accel_z_raw,
+                    chip->regs[VPM_REG_STATUS],
+                    chip->regs[VPM_REG_ODR],
+                    chip->data_work_enabled ? "enabled" : "disabled");
+
+    mutex_unlock(&chip->lock);
+
+    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+}
+
+static const struct file_operations vpm_sample_fops = {
+    .owner = THIS_MODULE,
+    .open = simple_open,
+    .read = vpm_sample_read,
+    .llseek = default_llseek,
+};
 
 static const struct file_operations vpm_fault_fops = {
     .owner = THIS_MODULE,
@@ -460,7 +620,10 @@ static int vpm_debugfs_init(struct vpm_mock_chip *chip)
                         chip, &vpm_registers_fops);
     
     debugfs_create_file("fault_inject", 0644, chip->debugfs_dir,
-                    chip, &vpm_fault_fops);
+                    	chip, &vpm_fault_fops);
+
+	debugfs_create_file("sample", 0444, chip->debugfs_dir,
+                    	chip, &vpm_sample_fops);				
     return 0;
 }
 
@@ -502,6 +665,7 @@ static int __init vpm_skeleton_init(void)
     pr_info("vpm_skeleton: initializing mock register map\n");
 
     mutex_init(&vpm_chip.lock);
+	INIT_DELAYED_WORK(&vpm_chip.data_work, vpm_data_workfn);
 
     vpm_mock_init_regs(&vpm_chip);
     vpm_mock_dump_regs(&vpm_chip);
@@ -517,6 +681,7 @@ static int __init vpm_skeleton_init(void)
         pr_err("vpm_skeleton: failed to initialize debugfs: %d\n", ret);
         return ret;
     }
+	vpm_mock_restart_data_work(&vpm_chip);
 
     pr_info("vpm_skeleton: debugfs created at /sys/kernel/debug/vpm_skeleton\n");
     pr_info("vpm_skeleton: mock chip initialized successfully\n");
@@ -526,6 +691,7 @@ static int __init vpm_skeleton_init(void)
 
 static void __exit vpm_skeleton_exit(void)
 {
+	cancel_delayed_work_sync(&vpm_chip.data_work);
     vpm_debugfs_exit(&vpm_chip);
     pr_info("vpm_skeleton: exit\n");
 }

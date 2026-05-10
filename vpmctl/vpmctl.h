@@ -15,7 +15,8 @@ typedef enum{
     OP_READ,
     OP_SET_ODR,
     OP_DUMP_REGS,
-    OP_FAULT
+    OP_FAULT,
+    OP_SAMPLE,
 } Operation;
 
 

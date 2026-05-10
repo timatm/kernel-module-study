@@ -71,6 +71,12 @@ int parse_command(int argc, char *argv[], Node *n)
             return -1;
         }
     }
+    else if (strcmp(argv[0], "sample") == 0) {
+        if (argc != 1)
+            return -1;
+
+        n->opt = OP_SAMPLE;
+    }
     else {
         printf("User command operation is not defined\n");
         return 1;
@@ -94,6 +100,7 @@ int op_help(){
     printf("\t ./vpmctl fault status\n");
     printf("\t ./vpmctl fault set <invalid_status|device_busy>\n");
     printf("\t ./vpmctl fault clear\n");
+    printf("\t ./vpmctl sample\n");
     return 0;
 }
 
@@ -315,6 +322,10 @@ int op_dump_regs(void)
     return print_debugfs_raw_file("registers");
 }
 
+int op_sample(void)
+{
+    return print_debugfs_raw_file("sample");
+}
 
 static int read_fault_value(unsigned int *value)
 {
@@ -474,6 +485,9 @@ int main(int argc,char *argv[]){
             break;
         case OP_FAULT:
             err = op_fault(n.subcmd, n.parameter);
+            break;
+        case OP_SAMPLE:
+            err = op_sample();
             break;
         default:
             fprintf(stderr, "unknown operation\n");
