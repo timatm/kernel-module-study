@@ -52,21 +52,32 @@ Supported commands:
 - `vpmctl dump-regs` dumps all virtual register values
 - `vpmctl help` shows usage information
 
-### DebugFS layout
+## Milestone 4: Mock Fault Injection
 
-```text
-/sys/kernel/debug/vpm_skeleton/
-├── whoami
-├── revision
-├── ctrl
-├── odr_hz
-├── status
-├── pm_state
-└── registers
-```
+M4 adds mock-only fault injection support.
+The purpose is to validate error-handling paths before real hardware is available.
 
-## Build
+Current fault modes include:
+- `invalid_status`  Simulates a hardware-reported fault state
+- `device_busy` Simulates a device rejecting configuration writes
 
-```bash
-cd modules/vpm_skeleton
-make
+`VPM_REG_FAULT_INJECT` is a mock-only validation register. It is not intended to represent a production hardware register. It exists to inject deterministic error conditions into the virtual hardware model.
+
+## Milestone 5: Fake Sensor Data Generator
+
+M5 adds a fake sensor data generator inside the kernel module.
+The module uses kernel delayed work to periodically update mock sensor samples, including:
+
+- sample counter
+- temperature raw data
+- accelerometer X/Y/Z raw data
+
+The configured ODR controls how often samples are updated.
+
+## Milestone 6: Stale Data Validation
+
+M6 adds a stale_data fault mode.
+
+This simulates a realistic sensor issue where register reads still succeed, but sensor samples stop updating. This helps validate that the data path is producing fresh data, not merely returning readable values.
+
+When stale_data is active, the delayed work remains enabled, but sample values stop changing. After clearing the fault, sample generation resumes.
