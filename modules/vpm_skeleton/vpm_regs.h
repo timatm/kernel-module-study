@@ -42,10 +42,6 @@
 
 #define VPM_WHOAMI_VALUE        0xa5
 
-/* FAULT_INJECT register bits */
-#define VPM_FAULT_INVALID_STATUS    BIT(0)
-#define VPM_FAULT_DEVICE_BUSY       BIT(1)
-
 /* CTRL register bits */
 #define VPM_CTRL_ENABLE         BIT(0)
 #define VPM_CTRL_LOW_POWER      BIT(1)

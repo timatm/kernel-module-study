@@ -1,5 +1,5 @@
 obj-m += vpm_skeleton.o
-
+vpm_skeleton-y := vpm_main.o vpm_core.o vpm_debugfs.o vpm_mock_bus.o
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 SRC_DIR := $(CURDIR)
