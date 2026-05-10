@@ -21,69 +21,66 @@ static int fault_name_to_value(const char *name, unsigned int *value)
         return 0;
     }
 
+    if (strcmp(name, "stale_data") == 0) {
+        *value = VPM_FAULT_STALE_DATA_VALUE;
+        return 0;
+    }
     return -1;
 }
-
 int parse_command(int argc, char *argv[], Node *n)
 {
-    if (!argv || !n) {
+    if (!argv || !n)
         return 1;
-    }
 
     if (argc < 1 || argc > 3)
-        return -1;
+        return 1;
 
+    n->opt = OP_HELP;
+    n->subcmd = NULL;
     n->parameter = NULL;
 
     if (strcmp(argv[0], "help") == 0) {
-        if(argc != 1) return 1;
+        if (argc != 1)
+            return 1;
         n->opt = OP_HELP;
-    }
-    else if (strcmp(argv[0], "info") == 0) {
-        if(argc != 1) return 1;
+    } else if (strcmp(argv[0], "info") == 0) {
+        if (argc != 1)
+            return 1;
         n->opt = OP_INFO;
-    }
-    else if (strcmp(argv[0], "read") == 0) {
-        if(argc != 2) return 1;
+    } else if (strcmp(argv[0], "read") == 0) {
+        if (argc != 2)
+            return 1;
         n->opt = OP_READ;
-    }
-    else if (strcmp(argv[0], "set-odr") == 0) {
-        if(argc != 2) return 1;
+        n->parameter = argv[1];
+    } else if (strcmp(argv[0], "set-odr") == 0) {
+        if (argc != 2)
+            return 1;
         n->opt = OP_SET_ODR;
-    }
-    else if (strcmp(argv[0], "dump-regs") == 0) {
-        if(argc != 1) return 1;
+        n->parameter = argv[1];
+    } else if (strcmp(argv[0], "dump-regs") == 0) {
+        if (argc != 1)
+            return 1;
         n->opt = OP_DUMP_REGS;
-    }
-    else if (strcmp(argv[0], "fault") == 0) {
+    } else if (strcmp(argv[0], "sample") == 0) {
+        if (argc != 1)
+            return 1;
+        n->opt = OP_SAMPLE;
+    } else if (strcmp(argv[0], "fault") == 0) {
         n->opt = OP_FAULT;
+
         if (argc == 2 && strcmp(argv[1], "status") == 0) {
             n->subcmd = argv[1];
-        }
-        else if (argc == 2 && strcmp(argv[1], "clear") == 0) {
+        } else if (argc == 2 && strcmp(argv[1], "clear") == 0) {
             n->subcmd = argv[1];
-        }
-        else if (argc == 3 && strcmp(argv[1], "set") == 0) {
+        } else if (argc == 3 && strcmp(argv[1], "set") == 0) {
             n->subcmd = argv[1];
             n->parameter = argv[2];
+        } else {
+            return 1;
         }
-        else {
-            return -1;
-        }
-    }
-    else if (strcmp(argv[0], "sample") == 0) {
-        if (argc != 1)
-            return -1;
-
-        n->opt = OP_SAMPLE;
-    }
-    else {
-        printf("User command operation is not defined\n");
+    } else {
+        fprintf(stderr, "unknown command: %s\n", argv[0]);
         return 1;
-    }
-
-    if (argc == 2) {
-        n->parameter = argv[1];
     }
 
     return 0;
@@ -98,7 +95,7 @@ int op_help(){
     printf("\t ./vpmctl set-odr <0-255>\n");
     printf("\t ./vpmctl dump-regs\n");
     printf("\t ./vpmctl fault status\n");
-    printf("\t ./vpmctl fault set <invalid_status|device_busy>\n");
+    printf("\t ./vpmctl fault set <invalid_status|device_busy|stale_data>\n");
     printf("\t ./vpmctl fault clear\n");
     printf("\t ./vpmctl sample\n");
     return 0;
@@ -416,6 +413,8 @@ static void print_fault_status(unsigned int value)
     if (value & VPM_FAULT_DEVICE_BUSY_VALUE)
         printf(" device_busy");
 
+    if (value & VPM_FAULT_STALE_DATA_VALUE)
+        printf(" stale_data");
     printf("\n");
 }
 
@@ -448,7 +447,7 @@ int op_fault(const char *subcmd, const char *parameter)
 
         if (fault_name_to_value(parameter, &value) != 0) {
             fprintf(stderr, "fault: unknown fault mode: %s\n", parameter);
-            fprintf(stderr, "valid modes: invalid_status device_busy\n");
+            fprintf(stderr, "valid modes: invalid_status device_busy stale_data\n");
             return -1;
         }
 

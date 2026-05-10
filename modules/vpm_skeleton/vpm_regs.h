@@ -65,7 +65,15 @@
 #define VPM_PM_RUNTIME_SUSPEND  2
 #define VPM_PM_SYSTEM_SUSPEND   3
 
+/*
+ * FAULT_INJECT register bits
+ *
+ * INVALID_STATUS : force STATUS_FAULT bit
+ * DEVICE_BUSY    : reject ODR writes with -EBUSY
+ * STALE_DATA     : keep data work running but freeze sample values
+ */
 #define VPM_FAULT_INVALID_STATUS    BIT(0)
 #define VPM_FAULT_DEVICE_BUSY       BIT(1)
+#define VPM_FAULT_STALE_DATA        BIT(2)
 
 #endif /* _VPM_REGS_H_ */

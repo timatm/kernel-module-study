@@ -119,7 +119,8 @@ static void vpm_data_workfn(struct work_struct *work)
     }
 
     chip->data_work_enabled = true;
-    vpm_mock_update_sample_locked(chip);
+    if (!(chip->regs[VPM_REG_FAULT_INJECT] & VPM_FAULT_STALE_DATA))
+    	vpm_mock_update_sample_locked(chip);
 
     mutex_unlock(&chip->lock);
 
@@ -220,13 +221,6 @@ static int vpm_mock_write_reg(struct vpm_mock_chip *chip, u8 reg, u8 val)
     return 0;
 }
 
-
-
-
-
-
-
-
 static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
 {
     u8 ctrl = VPM_CTRL_ENABLE;
@@ -253,8 +247,7 @@ static void vpm_mock_init_regs(struct vpm_mock_chip *chip)
     vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Y_L,
                                    chip->accel_y_raw);
     vpm_mock_write_s16_regs_locked(chip, VPM_REG_ACCEL_Z_L,
-                                   chip->accel_z_raw);
-
+                                   chip->accel_z_raw);					   
     if (low_power_default)
         ctrl |= VPM_CTRL_LOW_POWER;
 
@@ -429,7 +422,9 @@ static ssize_t vpm_fault_write(struct file *file,
     if (val > 0xff)
         return -EINVAL;
 
-    if (val & ~(VPM_FAULT_INVALID_STATUS | VPM_FAULT_DEVICE_BUSY))
+    if (val & ~(VPM_FAULT_INVALID_STATUS | 
+				VPM_FAULT_DEVICE_BUSY|
+				VPM_FAULT_STALE_DATA))
         return -EINVAL;
 
     ret = vpm_mock_write_reg(chip, VPM_REG_FAULT_INJECT, val);
@@ -459,6 +454,7 @@ static ssize_t vpm_sample_read(struct file *file,
                     "accel_z_raw   : %d\n"
                     "status        : 0x%02x\n"
                     "odr_hz        : %u\n"
+					"fault_inject  : 0x%02x\n\n"
                     "data_work     : %s\n",
                     chip->sample_counter,
                     chip->temp_raw,
@@ -467,6 +463,7 @@ static ssize_t vpm_sample_read(struct file *file,
                     chip->accel_z_raw,
                     chip->regs[VPM_REG_STATUS],
                     chip->regs[VPM_REG_ODR],
+					chip->regs[VPM_REG_FAULT_INJECT],
                     chip->data_work_enabled ? "enabled" : "disabled");
 
     mutex_unlock(&chip->lock);

@@ -8,7 +8,7 @@
 
 #define VPM_FAULT_INVALID_STATUS_VALUE  0x01
 #define VPM_FAULT_DEVICE_BUSY_VALUE     0x02
-
+#define VPM_FAULT_STALE_DATA_VALUE      0x04
 typedef enum{
     OP_HELP,
     OP_INFO,
